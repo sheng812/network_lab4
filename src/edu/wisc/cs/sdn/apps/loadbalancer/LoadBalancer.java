@@ -219,7 +219,13 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener, IOFMe
 					LoadBalancerInstance lb = instances.get(virtualIP);
 					int hostIP = lb.getNextHostIP();
 					byte[] mac = this.getHostMACAddress(hostIP);
-
+					for (int i = 0; i < 3 ; i++) {
+						if (mac != null) {
+							break;
+						}
+						hostIP = lb.getNextHostIP();
+						mac = this.getHostMACAddress(hostIP);
+					}
 //					for (Long swID : this.floodlightProv.getAllSwitchDpids()) {
 //						IOFSwitch s = this.floodlightProv.getSwitch(swID);
 //						
@@ -236,7 +242,7 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener, IOFMe
 					OFAction ofa2 = new OFActionSetField(OFOXMFieldType.ETH_DST, mac);
 					OFInstruction instruction = new OFInstructionApplyActions(Arrays.asList(ofa1, ofa2));
 					OFInstruction defaultInst = new OFInstructionGotoTable(L3Routing.table);
-
+//					log.info(String.format("mac %s, hostip", mac, hostIP));
 					SwitchCommands.installRule(sw, table, (short) (SwitchCommands.DEFAULT_PRIORITY + 1), match,
 							Arrays.asList(instruction, defaultInst), SwitchCommands.NO_TIMEOUT, IDLE_TIMEOUT);
 
@@ -266,12 +272,10 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener, IOFMe
 				}
 			}
 			break;
-		default:
-			return Command.CONTINUE;
 		}
 
 		// We don't care about other packets
-		return Command.STOP;
+		return Command.CONTINUE;
 	}
 
 	/**

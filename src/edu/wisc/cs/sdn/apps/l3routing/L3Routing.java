@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -59,6 +60,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
     
     // Map of source sw to BellmanFord map   <source switch, <switch, port to previous switch>>
     private Map<Long, Map<Long, Integer>> pathMap;
+    private Collection<IOFSwitch> switchInGraph;
 
 	/**
      * Loads dependencies and initializes data structures.
@@ -78,6 +80,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
         
         this.knownHosts = new ConcurrentHashMap<IDevice,Host>();
         this.pathMap = new HashMap<Long, Map<Long, Integer>>();
+        this.switchInGraph = new HashSet<IOFSwitch>();
 	}
 
 	/**
@@ -94,7 +97,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Initialize variables or perform startup tasks, if necessary */
-		updateBellmanFordMap();
+//		updateRules();
 		
 		/*********************************************************************/
 	}
@@ -135,11 +138,8 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			/*****************************************************************/
 			/* TODO: Update routing: add rules to route to new host          */
 			if (host.isAttachedToSwitch()) {
-				IOFSwitch sw = host.getSwitch();
-				if (!pathMap.containsKey(sw.getId())) {
-					pathMap.put(sw.getId(), BellmanFord(sw));
-				}
-				installRules(host);
+				log.info(String.format("(device added) current link switch : %s, %s", host.getPort(), host.getSwitch().getId()));
+				updateRules(host);
 			}
 			/*****************************************************************/
 		}
@@ -163,7 +163,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		/*********************************************************************/
 		/* TODO: Update routing: remove rules to route to host               */
 		removeRules(host);
-		
+		log.info(String.format("link size %s", this.linkDiscProv.getLinks()));
 		/*********************************************************************/
 	}
 
@@ -191,7 +191,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change rules to route to host               */
-		updateBellmanFordMap();
+		updateRules(host);
 		
 		/*********************************************************************/
 	}
@@ -204,12 +204,12 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	public void switchAdded(long switchId) 
 	{
 		IOFSwitch sw = this.floodlightProv.getSwitch(switchId);
-//		log.info(String.format("Switch s%d added", switchId));
-//		log.info(String.format("Switch s%d added, table 1 udpated", switchId));
+		log.info(String.format("Switch s%d added", switchId));
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-		updateBellmanFordMap();
+		pathMap.put(switchId, BellmanFord(sw));
+		log.info(String.format("(switch added) current bellman map : %s", BellmanFord(sw)));
 		
 		/*********************************************************************/
 	}
@@ -226,7 +226,9 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-		updateBellmanFordMap();
+		for (IOFSwitch s : this.getSwitches().values()) {
+			pathMap.put(s.getId(), BellmanFord(s));
+		}
 		
 		/*********************************************************************/
 	}
@@ -258,7 +260,15 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-		updateBellmanFordMap();
+		log.info(String.format("link size %s", this.getSwitches().size()));
+		for (Link link : this.getLinks()) {
+//			pathMap.put(sw.getId(), BellmanFord(sw));
+			log.info(String.format("test Link s%s:%d -> s%s:%d updated", 
+					link.getDst(), link.getDstPort(), link.getSrc(), link.getSrcPort()));
+			if (this.getSwitches().containsKey(link.getSrc()))
+			{ switchInGraph.add(this.getSwitches().get(link.getSrc())); }
+		}
+			
 		
 		/*********************************************************************/
 	}
@@ -374,16 +384,16 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		Map<Long, Integer> previousMap = new HashMap<Long, Integer>();
 		
 		// initialize
-		for (IOFSwitch sw : this.getSwitches().values()) {
+		for (IOFSwitch sw : switchInGraph) {
 			if (sw.getId() == source.getId()) {
 				distanceMap.put(sw.getId(), 0);
 			} else {
 				distanceMap.put(sw.getId(), Integer.MAX_VALUE);
 			}
-			previousMap.put(sw.getId(), null);
+//			previousMap.put(sw.getId(), null);
 		}
-		
-		for (IOFSwitch sw : this.getSwitches().values()) {
+		log.info(String.format("current bellman map : %s", previousMap));
+		for (IOFSwitch sw : switchInGraph) {
 			for (Link link : this.getLinks()) {
 				long id1 = link.getSrc();
 				long id2 = link.getDst();
@@ -401,12 +411,13 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 				}
 			}
 		}
+		log.info(String.format("current bellman map : %s", previousMap));
 		return previousMap;
 	}
 	
 	private void installRules(Host host) {
-		IOFSwitch sw = host.getSwitch();
-		for (IOFSwitch s : this.getSwitches().values()) {
+		if (host.getSwitch() != null) {
+			IOFSwitch sw = host.getSwitch();
 			OFMatch ofMatch = new OFMatch();
 			OFActionOutput ofa = new OFActionOutput();
 			List<OFAction> actions = new ArrayList<OFAction>();
@@ -415,21 +426,39 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			
 			ofMatch.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
 			ofMatch.setNetworkDestination(host.getIPv4Address());
-			if (s.getId() == sw.getId()) {
-				ofa.setPort(host.getPort());
-			} else {
-				ofa.setPort(pathMap.get(sw.getId()).get(s.getId()));
-			}
+			ofa.setPort(host.getPort());
 			actions.add(ofa);
 			ofia.setActions(actions);
 			instructions.add(ofia);
-			SwitchCommands.removeRules(s, table, ofMatch);
-			SwitchCommands.installRule(s, table, SwitchCommands.DEFAULT_PRIORITY, ofMatch, instructions);
+			SwitchCommands.removeRules(sw, table, ofMatch);
+			SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, ofMatch, instructions);
+			
+			log.info(String.format("host port:%d -> host updated", host.getPort()));
+			for (IOFSwitch s : switchInGraph) {
+				OFMatch ofMatch1 = new OFMatch();
+				OFActionOutput ofa1 = new OFActionOutput();
+				List<OFAction> actions1 = new ArrayList<OFAction>();
+				OFInstructionApplyActions ofia1 = new OFInstructionApplyActions();
+				List<OFInstruction> instructions1 = new ArrayList<OFInstruction>();
+				
+				ofMatch1.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+				ofMatch1.setNetworkDestination(host.getIPv4Address());
+				if (s.getId() != sw.getId()) {
+//					log.info(String.format("current map : %s", pathMap.get(sw.getId())));
+					ofa.setPort(pathMap.get(sw.getId()).get(s.getId()));
+//					ofa.setPort(2);
+				}
+				actions1.add(ofa1);
+				ofia.setActions(actions1);
+				instructions1.add(ofia1);
+				SwitchCommands.removeRules(s, table, ofMatch1);
+				SwitchCommands.installRule(s, table, SwitchCommands.DEFAULT_PRIORITY, ofMatch1, instructions1);
+			}
 		}
 	}
 	
 	private void removeRules(Host host) {
-		for (IOFSwitch s : this.getSwitches().values()) {
+		for (IOFSwitch s : switchInGraph) {
 			OFMatch ofMatch = new OFMatch();
 			ofMatch.setNetworkDestination(host.getIPv4Address());
 
@@ -437,16 +466,14 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		}
 	}
 	
-	private void updateBellmanFordMap() {
-		pathMap.clear();
-		for (Host host : this.getHosts()) {
-			if (host.isAttachedToSwitch()) {
-				IOFSwitch sw = host.getSwitch();
-				if (!pathMap.containsKey(sw.getId())) {
-					pathMap.put(sw.getId(), BellmanFord(sw));
-				}
-				installRules(host);
+	private void updateRules(Host host) {
+		if (host.isAttachedToSwitch()) {
+			IOFSwitch sw = host.getSwitch();
+			if (!pathMap.containsKey(sw.getId())) {
+				pathMap.put(sw.getId(), BellmanFord(sw));
 			}
-		}	
+			log.info(String.format("current map : %s", pathMap.get(sw.getId())));
+			installRules(host);
+		}
 	}
 }
